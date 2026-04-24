@@ -19,3 +19,4 @@ Local bias-audit app with a FastAPI backend and React frontend.
 - Default model is Random Forest for better accuracy.
 - Gemini is optional. If `GEMINI_API_KEY` is not set, the app uses local fallback explanations.
 - If the frontend dependency folder gets corrupted, run `npm run reset-frontend` from the root.
+- For Netlify/Vercel, set `REACT_APP_API_URL` to your deployed backend URL.

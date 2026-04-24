@@ -8,7 +8,7 @@ import {
 } from 'recharts';
 import toast, { Toaster } from 'react-hot-toast';
 
-const API = 'http://localhost:8001';
+const API = process.env.REACT_APP_API_URL || 'http://localhost:8001';
 
 // ─── Color helpers ─────────────────────────────────────────────────────────
 const SEV_COLOR = { Critical: '#fc8181', High: '#f6ad55', Medium: '#f6e05e', Low: '#68d391' };
