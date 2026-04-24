@@ -1,6 +1,8 @@
 @echo off
 setlocal
 
+set FAIRSIGHT_PORT=8001
+
 if not exist venv (
   python -m venv venv
 )

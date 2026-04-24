@@ -2,7 +2,7 @@
 setlocal
 
 if not exist node_modules (
-  npm install
+  call reset-node-modules.bat
 )
 
 npm start

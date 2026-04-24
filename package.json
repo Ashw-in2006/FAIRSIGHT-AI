@@ -1,0 +1,9 @@
+{
+  "name": "fairsight-ai-root",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "start": "cmd /c run-local.bat",
+    "reset-frontend": "cmd /c frontend\\reset-node-modules.bat"
+  }
+}

@@ -1,4 +1,10 @@
-echo node_modules/ >> .gitignore
-echo .env >> .gitignore
-echo dist/ >> .gitignore
-echo build/ >> .gitignore
+node_modules/
+frontend/node_modules/
+.env
+dist/
+build/
+frontend/build/
+backend/__pycache__/
+_zipstage*/
+FairSight-AI-local.zip
+fairfinal.zip

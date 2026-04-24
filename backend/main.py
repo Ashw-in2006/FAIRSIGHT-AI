@@ -6,7 +6,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import accuracy_score
 from fairlearn.metrics import (
     MetricFrame,
@@ -85,11 +85,20 @@ def get_column_info(df: pd.DataFrame):
     return info
 
 
-def calculate_fairness_metrics(df, target_col, sensitive_col, classifier_name="logistic"):
+def calculate_fairness_metrics(
+    df,
+    target_col,
+    sensitive_col,
+    classifier_name="random_forest",
+    drop_sensitive_from_features=False,
+    threshold=0.5,
+):
     """Train model and calculate comprehensive fairness metrics."""
     df_enc, le_dict = encode_dataframe(df)
     
     X = df_enc.drop(columns=[target_col])
+    if drop_sensitive_from_features and sensitive_col in X.columns:
+        X = X.drop(columns=[sensitive_col])
     y = df_enc[target_col]
     sensitive = df_enc[sensitive_col]
     
@@ -99,14 +108,22 @@ def calculate_fairness_metrics(df, target_col, sensitive_col, classifier_name="l
         "random_forest": RandomForestClassifier(n_estimators=100, random_state=42),
         "decision_tree": DecisionTreeClassifier(max_depth=5, random_state=42),
     }
-    clf = classifiers.get(classifier_name, classifiers["logistic"])
+    clf = classifiers.get(classifier_name, classifiers["random_forest"])
     
     X_train, X_test, y_train, y_test, s_train, s_test = train_test_split(
-        X, y, sensitive, test_size=0.25, random_state=42
+        X, y, sensitive, test_size=0.25, random_state=42, stratify=y
     )
+
+    # Scale features to stabilize training and improve baseline accuracy.
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
     
     clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
+    if hasattr(clf, "predict_proba"):
+        y_pred = (clf.predict_proba(X_test)[:, 1] >= threshold).astype(int)
+    else:
+        y_pred = clf.predict(X_test)
     
     # Core fairness metrics
     dp_diff = float(demographic_parity_difference(y_test, y_pred, sensitive_features=s_test))
@@ -189,24 +206,97 @@ def get_severity(metrics: dict) -> str:
     return "Low"
 
 
-def get_mitigation_suggestion(metrics: dict, severity: str):
+def get_mitigation_suggestion(metrics: dict, severity: str, sensitive_col: str, classifier_name: str):
     """Generate actionable bias mitigation suggestions."""
     suggestions = []
 
     if metrics["disparate_impact_ratio"] < 0.8:
-        suggestions.append("⚖️ Reweighing: balance training samples across groups before retraining.")
+        suggestions.append({
+            "title": "Apply Reweighing (AIF360)",
+            "description": "Balance training examples so underrepresented groups matter more during fitting.",
+            "code": f"from aif360.algorithms.preprocessing import Reweighing\nreweigh = Reweighing(unprivileged_groups=[{{'{sensitive_col}': 0}}], privileged_groups=[{{'{sensitive_col}': 1}}])",
+            "difficulty": "Medium",
+        })
 
     if abs(metrics["statistical_parity_difference"]) > 0.1:
-        suggestions.append("🎯 Threshold tuning: adjust the decision threshold for disadvantaged groups.")
+        suggestions.append({
+            "title": "Tune Decision Threshold",
+            "description": "Adjust the prediction cutoff to reduce the parity gap across groups.",
+            "code": "y_pred = (model.predict_proba(X_test)[:, 1] >= 0.35).astype(int)",
+            "difficulty": "Easy",
+        })
+
+    if metrics["overall_accuracy"] < 0.7 or classifier_name != "random_forest":
+        suggestions.append({
+            "title": "Use Random Forest by Default",
+            "description": "Replace LogisticRegression with a stronger tree ensemble for a better baseline model.",
+            "code": "from sklearn.ensemble import RandomForestClassifier\nmodel = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)",
+            "difficulty": "Easy",
+        })
 
     if severity in ("High", "Critical"):
-        suggestions.append("🔄 Collect more data from underrepresented groups.")
-        suggestions.append("🧹 Remove proxy features like zip code, school, or language that correlate with protected traits.")
+        suggestions.append({
+            "title": "Collect More Balanced Data",
+            "description": "Add more samples from underrepresented groups before retraining.",
+            "code": "# Add more rows for the underrepresented group before model.fit()",
+            "difficulty": "Medium",
+        })
+        suggestions.append({
+            "title": f"Drop '{sensitive_col}' Proxies",
+            "description": "Remove features that indirectly leak the protected attribute.",
+            "code": f"X = X.drop(columns=['{sensitive_col}'])",
+            "difficulty": "Easy",
+        })
 
     if not suggestions:
-        suggestions.append("✅ Model looks fair right now. Keep monitoring as new data arrives.")
+        suggestions.append({
+            "title": "Monitor and Recheck",
+            "description": "The model looks acceptable now, but keep tracking fairness on new data.",
+            "code": "# Re-run bias audit whenever training data changes",
+            "difficulty": "Easy",
+        })
 
     return suggestions
+
+
+def build_mitigation_comparison(df: pd.DataFrame, target_col: str, sensitive_col: str, classifier_name: str):
+    """Compare baseline fairness metrics to a simple mitigation pass."""
+    before = calculate_fairness_metrics(df, target_col, sensitive_col, classifier_name)
+    after = calculate_fairness_metrics(
+        df,
+        target_col,
+        sensitive_col,
+        classifier_name,
+        drop_sensitive_from_features=True,
+        threshold=0.35,
+    )
+
+    return {
+        "before": before,
+        "after": after,
+        "before_severity": get_severity(before),
+        "after_severity": get_severity(after),
+        "before_fairness_score": round(
+            (min(before["disparate_impact_ratio"], 1) * 40)
+            + (max(0, 1 - abs(before["statistical_parity_difference"]) * 5) * 30)
+            + (max(0, 1 - abs(before["equal_opportunity_difference"]) * 5) * 30)
+        ),
+        "after_fairness_score": round(
+            (min(after["disparate_impact_ratio"], 1) * 40)
+            + (max(0, 1 - abs(after["statistical_parity_difference"]) * 5) * 30)
+            + (max(0, 1 - abs(after["equal_opportunity_difference"]) * 5) * 30)
+        ),
+        "strategy": {
+            "title": "Remove sensitive feature + lower threshold",
+            "description": f"Retrain without '{sensitive_col}' in the feature set and use a stricter threshold to reduce disparity.",
+        },
+        "mitigation_notes": [
+            f"Removed '{sensitive_col}' from the training feature set.",
+            "Applied threshold tuning (0.50 -> 0.35) for the mitigation pass.",
+            f"Fairness Score changed from {round((min(before['disparate_impact_ratio'], 1) * 40) + (max(0, 1 - abs(before['statistical_parity_difference']) * 5) * 30) + (max(0, 1 - abs(before['equal_opportunity_difference']) * 5) * 30))} to {round((min(after['disparate_impact_ratio'], 1) * 40) + (max(0, 1 - abs(after['statistical_parity_difference']) * 5) * 30) + (max(0, 1 - abs(after['equal_opportunity_difference']) * 5) * 30))}.",
+            f"Accuracy changed from {before['overall_accuracy']} to {after['overall_accuracy']}.",
+        ],
+    }
 
 
 def get_gemini_explanation(metrics: dict, sensitive_col: str, target_col: str, dataset_name: str = "uploaded") -> dict:
@@ -220,19 +310,19 @@ def get_gemini_explanation(metrics: dict, sensitive_col: str, target_col: str, d
         spd = metrics["statistical_parity_difference"]
         
         if severity in ("Critical", "High"):
-            bias_level = "significant bias"
-            action = "Consider reweighing the training data or applying fairness constraints during model training."
+            verdict = "HIGH BIAS - needs mitigation"
+            action = f"Apply reweighing or remove '{sensitive_col}'-linked proxy features before retraining."
         elif severity == "Medium":
-            bias_level = "moderate bias"
-            action = "Review data collection process and consider fairness-aware training techniques."
+            verdict = "MODERATE BIAS - monitor closely"
+            action = f"Tune the decision threshold and rebalance samples for '{sensitive_col}'."
         else:
-            bias_level = "low bias"
-            action = "Continue monitoring bias metrics as new data is added."
+            verdict = "LOW BIAS - within acceptable thresholds"
+            action = "Continue monitoring as new data arrives."
         
         return {
-            "summary": f"The model shows {bias_level} (severity: {severity}). Disparate Impact Ratio is {di} — values below 0.8 indicate legally significant bias. Statistical Parity Difference of {abs(spd):.3f} shows unequal prediction rates across groups in '{sensitive_col}'.",
-            "disadvantaged_groups": f"Groups with lower selection rates or accuracy based on '{sensitive_col}' are most affected. Check the 'Accuracy by Group' chart for specifics.",
-            "root_cause": f"Historical patterns in the dataset likely encode past discrimination. When the model learns from this data, it perpetuates those patterns. The '{sensitive_col}' column directly or indirectly influences the '{target_col}' predictions.",
+            "summary": f"{verdict}. Disparate Impact Ratio is {di} and Statistical Parity Difference is {abs(spd):.3f} for '{sensitive_col}'.",
+            "disadvantaged_groups": f"Groups with lower selection rates or accuracy on '{sensitive_col}' are most affected. Check the group charts for specifics.",
+            "root_cause": f"Historical bias and proxy variables in the dataset likely influence '{target_col}' through '{sensitive_col}'.",
             "recommendation": action,
             "gemini_powered": False
         }
@@ -245,20 +335,25 @@ Sensitive attribute (protected group): {sensitive_col}
 Target variable (what model predicts): {target_col}
 
 Fairness Metrics:
-- Disparate Impact Ratio: {metrics['disparate_impact_ratio']} (threshold: 0.8 minimum, 1.0 = perfect)
-- Statistical Parity Difference: {metrics['statistical_parity_difference']} (threshold: ±0.1, 0 = perfect)
+- Disparate Impact Ratio: {metrics['disparate_impact_ratio']} (fair if >= 0.8)
+- Statistical Parity Difference: {metrics['statistical_parity_difference']} (fair if <= 0.1)
 - Equal Opportunity Difference: {metrics['equal_opportunity_difference']}
 - Overall Model Accuracy: {metrics['overall_accuracy']}
 - Per-group metrics: {json.dumps(metrics['group_metrics'], indent=2)}
 
+CRITICAL RULES:
+1. If Disparate Impact < 0.8 OR Statistical Parity > 0.1, say bias exists.
+2. Do not say the model is fair if bias exists.
+3. Recommendation must mention a concrete fix like reweighing, threshold tuning, or removing proxy features.
+
 Return this exact JSON structure:
-{{
+ {{
   "summary": "2-3 sentence plain-English verdict on bias level and key finding",
   "disadvantaged_groups": "Which specific groups are most disadvantaged and how",
   "root_cause": "Most likely cause of this bias in plain terms (data collection, historical discrimination, proxy variables, etc.)",
   "recommendation": "One concrete, actionable technical fix with specifics",
   "gemini_powered": true
-}}
+ }}
 """
     try:
         response = model.generate_content(prompt)
@@ -270,10 +365,10 @@ Return this exact JSON structure:
         return result
     except Exception as e:
         return {
-            "summary": f"Analysis complete. Disparate Impact: {metrics['disparate_impact_ratio']}, Statistical Parity Diff: {metrics['statistical_parity_difference']:.4f}.",
+            "summary": f"HIGH BIAS - needs mitigation. Disparate Impact: {metrics['disparate_impact_ratio']}, Statistical Parity Diff: {metrics['statistical_parity_difference']:.4f}.",
             "disadvantaged_groups": "See group metrics chart for per-group breakdown.",
             "root_cause": "Could not generate detailed analysis. Check your Gemini API key.",
-            "recommendation": "Apply fairness-aware training or data reweighing techniques.",
+            "recommendation": "Apply reweighing, threshold tuning, or remove proxy features before retraining.",
             "gemini_powered": False,
             "error": str(e)
         }
@@ -323,7 +418,7 @@ async def audit_dataset(
     file: UploadFile = File(...),
     target_col: str = Query(..., description="Target column to predict"),
     sensitive_col: str = Query(..., description="Sensitive/protected attribute column"),
-    classifier: str = Query("logistic", description="Classifier: logistic, random_forest, decision_tree"),
+    classifier: str = Query("random_forest", description="Classifier: logistic, random_forest, decision_tree"),
 ):
     """Full bias audit: train model, compute fairness metrics, get Gemini explanation."""
     try:
@@ -355,7 +450,7 @@ async def audit_dataset(
             "severity": severity,
             "metrics": metrics,
             "explanation": explanation,
-            "suggestions": get_mitigation_suggestion(metrics, severity),
+            "suggestions": get_mitigation_suggestion(metrics, severity, sensitive_col, classifier),
             "dataset_info": {
                 "filename": file.filename,
                 "total_rows": len(df),
@@ -372,6 +467,41 @@ async def audit_dataset(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
+@app.post("/mitigate")
+async def mitigate_dataset(
+    file: UploadFile = File(...),
+    target_col: str = Query(..., description="Target column to predict"),
+    sensitive_col: str = Query(..., description="Sensitive/protected attribute column"),
+    classifier: str = Query("random_forest", description="Classifier: logistic, random_forest, decision_tree"),
+):
+    """Run a simple before/after mitigation comparison."""
+    try:
+        content = await file.read()
+        df = pd.read_csv(StringIO(content.decode('utf-8')))
+        df.columns = [str(c).strip() for c in df.columns]
+
+        if target_col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{target_col}' not found. Available: {list(df.columns)}")
+        if sensitive_col not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{sensitive_col}' not found. Available: {list(df.columns)}")
+
+        df = df.dropna(subset=[target_col, sensitive_col])
+        if len(df) < 50:
+            raise HTTPException(status_code=400, detail="Not enough clean rows for mitigation comparison (need 50+)")
+
+        comparison = build_mitigation_comparison(df, target_col, sensitive_col, classifier)
+
+        return {
+            "status": "success",
+            **comparison,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Mitigation failed: {str(e)}")
+
+
 @app.get("/health")
 def health():
     return {"status": "healthy", "gemini": bool(GEMINI_API_KEY)}
@@ -380,4 +510,4 @@ def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("FAIRSIGHT_PORT", "8001")))

@@ -8,7 +8,7 @@ import {
 } from 'recharts';
 import toast, { Toaster } from 'react-hot-toast';
 
-const API = 'http://localhost:8000';
+const API = 'http://localhost:8001';
 
 // ─── Color helpers ─────────────────────────────────────────────────────────
 const SEV_COLOR = { Critical: '#fc8181', High: '#f6ad55', Medium: '#f6e05e', Low: '#68d391' };
@@ -96,17 +96,55 @@ function SuggestionList({ suggestions }) {
 
   return (
     <Section title="How to Fix This" badge={<span style={{ fontSize: 11, color: 'var(--accent)', fontFamily: 'var(--font-mono)', background: 'rgba(99,179,237,0.08)', padding: '2px 8px', borderRadius: 999 }}>Mitigation</span>}>
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem 1.1rem' }}>
-        <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {suggestions.map((s, i) => (
-            <li key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', color: 'var(--text)', fontSize: 13.5, lineHeight: 1.6 }}>
-              <span style={{ color: 'var(--accent2)', flexShrink: 0 }}>•</span>
-              <span>{s}</span>
-            </li>
-          ))}
-        </ul>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {suggestions.map((s, i) => (
+          <div key={i} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem 1.1rem' }}>
+            {s.title ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--text)' }}>{s.title}</div>
+                  {s.difficulty && <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', background: 'var(--bg3)', padding: '2px 8px', borderRadius: 999 }}>{s.difficulty}</span>}
+                </div>
+                <div style={{ color: 'var(--text2)', fontSize: 13.5, lineHeight: 1.6, marginBottom: 10 }}>{s.description}</div>
+                <pre style={{ margin: 0, padding: '0.85rem 1rem', background: 'var(--bg3)', color: 'var(--accent2)', borderRadius: 'var(--radius-sm)', overflowX: 'auto', fontSize: 12, fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap' }}>{s.code}</pre>
+              </>
+            ) : (
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', color: 'var(--text)', fontSize: 13.5, lineHeight: 1.6 }}>
+                <span style={{ color: 'var(--accent2)', flexShrink: 0 }}>•</span>
+                <span>{String(s)}</span>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </Section>
+  );
+}
+
+function CompareCard({ label, before, after, precision = 3, lowerIsBetter = false }) {
+  const delta = Number(after) - Number(before);
+  const deltaText = `${delta >= 0 ? '+' : ''}${delta.toFixed(precision)}`;
+  const improved = lowerIsBetter ? delta <= 0 : delta >= 0;
+  const color = improved ? 'var(--green)' : 'var(--red)';
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem' }}>
+      <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text3)' }}>Before</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--text)' }}>{Number(before).toFixed(precision)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text3)' }}>After</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color }}>{Number(after).toFixed(precision)}</div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 12, color: 'var(--text3)' }}>Delta</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color }}>{deltaText}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -169,7 +207,7 @@ const customTooltipStyle = {
 function ColumnSelector({ preview, onAudit, loading }) {
   const [targetCol, setTargetCol] = useState('');
   const [sensitiveCol, setSensitiveCol] = useState('');
-  const [classifier, setClassifier] = useState('logistic');
+  const [classifier, setClassifier] = useState('random_forest');
   const [fileToSend, setFileToSend] = useState(preview.file);
 
   const columns = preview.columns;
@@ -253,8 +291,8 @@ function ColumnSelector({ preview, onAudit, loading }) {
               Classifier Model
             </label>
             <select style={selectStyle} value={classifier} onChange={e => setClassifier(e.target.value)}>
+              <option value="random_forest">Random Forest (Recommended)</option>
               <option value="logistic">Logistic Regression</option>
-              <option value="random_forest">Random Forest</option>
               <option value="decision_tree">Decision Tree</option>
             </select>
           </div>
@@ -315,7 +353,7 @@ function ColumnSelector({ preview, onAudit, loading }) {
 
 // ─── Results Panel ─────────────────────────────────────────────────────────
 
-function Results({ data }) {
+function Results({ data, onMitigate, mitigationResult, mitigating }) {
   const { severity, metrics, explanation, dataset_info, suggestions } = data;
   const gm = metrics.group_metrics;
 
@@ -533,6 +571,93 @@ function Results({ data }) {
 
       <SuggestionList suggestions={suggestions} />
 
+      <Section title="Before vs After">
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ background: 'linear-gradient(135deg, rgba(99,179,237,0.08), rgba(79,209,197,0.05))', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem 1.1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, marginBottom: 4 }}>🔧 Try Bias Mitigation</div>
+                <div style={{ fontSize: 13, color: 'var(--text2)' }}>Run a second pass that removes sensitive proxies and tunes the threshold.</div>
+              </div>
+              <button
+                onClick={onMitigate}
+                disabled={mitigating}
+                style={{
+                  background: 'var(--accent2)',
+                  color: '#061017',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px 14px',
+                  fontWeight: 800,
+                  cursor: mitigating ? 'not-allowed' : 'pointer',
+                  fontFamily: 'var(--font-display)'
+                }}
+              >
+                {mitigating ? 'Running...' : 'Apply Mitigation →'}
+              </button>
+            </div>
+
+            {mitigationResult ? (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div style={{ fontSize: 13, color: 'var(--text2)' }}>
+                  <strong style={{ color: 'var(--text)' }}>Strategy:</strong> {mitigationResult.strategy.description}
+                </div>
+                <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem 1.1rem' }}>
+                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, marginBottom: 8 }}>🔬 What Mitigation Did</div>
+                  <ul style={{ paddingLeft: 18, margin: 0, color: 'var(--text2)', lineHeight: 1.7 }}>
+                    {(mitigationResult.mitigation_notes || []).map((item, idx) => <li key={idx}>{item}</li>)}
+                  </ul>
+                  {mitigationResult.before.overall_accuracy > mitigationResult.after.overall_accuracy && (
+                    <div style={{ marginTop: 12, background: 'rgba(246,173,85,0.08)', border: '1px solid rgba(246,173,85,0.2)', borderRadius: 'var(--radius-sm)', padding: '0.85rem 1rem', color: 'var(--text2)' }}>
+                      <strong style={{ color: 'var(--orange)' }}>⚠️ Fairness-Accuracy Trade-off</strong>
+                      <div style={{ marginTop: 6 }}>
+                        Mitigation improved fairness while slightly reducing accuracy. That tradeoff is normal in ethical AI, especially for high-stakes decisions where fairness matters more.
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', fontFamily: 'var(--font-mono)', marginBottom: 10 }}>Fairness Score Comparison</div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart
+                      data={[
+                        { stage: 'Before', score: mitigationResult.before_fairness_score },
+                        { stage: 'After', score: mitigationResult.after_fairness_score },
+                      ]}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,179,237,0.08)" />
+                      <XAxis dataKey="stage" tick={{ fill: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#64748b', fontSize: 11, fontFamily: 'JetBrains Mono' }} axisLine={false} tickLine={false} domain={[0, 100]} />
+                      <Tooltip contentStyle={customTooltipStyle} formatter={v => [v, 'Fairness Score']} />
+                      <Bar dataKey="score" radius={[6, 6, 0, 0]}>
+                        <Cell fill={BAR_COLORS[0]} />
+                        <Cell fill={BAR_COLORS[4]} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
+                  <CompareCard label="Fairness Score" before={mitigationResult.before_fairness_score} after={mitigationResult.after_fairness_score} precision={0} />
+                  <CompareCard label="Disparate Impact" before={mitigationResult.before.disparate_impact_ratio} after={mitigationResult.after.disparate_impact_ratio} lowerIsBetter={false} />
+                  <CompareCard label="Statistical Parity" before={mitigationResult.before.statistical_parity_difference} after={mitigationResult.after.statistical_parity_difference} lowerIsBetter={true} />
+                  <CompareCard label="Overall Accuracy" before={mitigationResult.before.overall_accuracy} after={mitigationResult.after.overall_accuracy} lowerIsBetter={false} />
+                </div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', background: 'var(--bg3)', padding: '4px 8px', borderRadius: 999 }}>
+                    Before: {mitigationResult.before_severity}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-mono)', background: 'var(--bg3)', padding: '4px 8px', borderRadius: 999 }}>
+                    After: {mitigationResult.after_severity}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--text3)' }}>Click the button to show how fairness changes after a simple mitigation pass.</div>
+            )}
+          </div>
+        </div>
+      </Section>
+
       {/* Dataset Info */}
       <Section title="Dataset Summary">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -615,7 +740,10 @@ export default function App() {
   const [step, setStep] = useState('upload'); // upload | configure | results
   const [preview, setPreview] = useState(null);
   const [results, setResults] = useState(null);
+  const [currentConfig, setCurrentConfig] = useState(null);
+  const [mitigationResult, setMitigationResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [mitigating, setMitigating] = useState(false);
   const [apiStatus, setApiStatus] = useState(null);
   const [theme, setTheme] = useState('dark');
   const [showInfo, setShowInfo] = useState(false);
@@ -636,6 +764,8 @@ export default function App() {
 
   const handleAudit = async (file, targetCol, sensitiveCol, classifier) => {
     setLoading(true);
+    setCurrentConfig({ file, targetCol, sensitiveCol, classifier });
+    setMitigationResult(null);
     const formData = new FormData();
     formData.append('file', file);
     const toastId = toast.loading('Running bias audit…');
@@ -656,7 +786,29 @@ export default function App() {
     }
   };
 
-  const reset = () => { setStep('upload'); setPreview(null); setResults(null); };
+  const handleMitigation = async () => {
+    if (!currentConfig) return;
+    setMitigating(true);
+    const toastId = toast.loading('Running mitigation comparison…');
+    const formData = new FormData();
+    formData.append('file', currentConfig.file);
+
+    try {
+      const res = await axios.post(
+        `${API}/mitigate?target_col=${encodeURIComponent(currentConfig.targetCol)}&sensitive_col=${encodeURIComponent(currentConfig.sensitiveCol)}&classifier=${currentConfig.classifier}`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+      setMitigationResult(res.data);
+      toast.success('Mitigation comparison ready!', { id: toastId });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Mitigation comparison failed', { id: toastId });
+    } finally {
+      setMitigating(false);
+    }
+  };
+
+  const reset = () => { setStep('upload'); setPreview(null); setResults(null); setCurrentConfig(null); setMitigationResult(null); };
 
   const steps = [
     { key: 'upload', label: '01 Upload' },
@@ -774,7 +926,7 @@ export default function App() {
         )}
 
         {step === 'results' && results && (
-          <Results data={results} />
+          <Results data={results} onMitigate={handleMitigation} mitigationResult={mitigationResult} mitigating={mitigating} />
         )}
       </main>
     </div>
